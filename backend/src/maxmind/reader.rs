@@ -7,6 +7,7 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 use serde::{Serialize, Deserialize};
+use crate::utils::whois_client::WhoisInfo;
 
 pub struct MaxmindReader {
     config: Arc<MaxmindConfig>,
@@ -23,6 +24,7 @@ pub struct IpInfo {
     pub city: Option<String>,
     pub asn: Option<u32>,
     pub organization: Option<String>,
+    pub whois_info: Option<WhoisInfo>,
 }
 
 impl MaxmindReader {
@@ -65,6 +67,7 @@ impl MaxmindReader {
             city: None,
             asn: None,
             organization: None,
+            whois_info: None,
         };
         
         if let Some(reader) = &self.asn_reader {

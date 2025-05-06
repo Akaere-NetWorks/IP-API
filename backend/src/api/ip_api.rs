@@ -1,5 +1,6 @@
 use crate::maxmind::reader::MaxmindReader;
 use crate::utils::ip_cache::IpCache;
+use crate::utils::whois_client::WhoisClient;
 use axum::{
     extract::Path,
     http::StatusCode,
@@ -9,10 +10,11 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::info;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{info, warn};
 
 #[derive(Serialize, Deserialize)]
-pub struct IpResponse {
+pub struct IpInfo {
     pub ip: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip_range: Option<String>,
@@ -24,8 +26,31 @@ pub struct IpResponse {
     pub asn: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub organization: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct WhoisInfoResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cached: Option<bool>,
+    pub netname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub descr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub org: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maintainer: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct IpResponse {
+    pub info: IpInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub whois_info: Option<WhoisInfoResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached: Option<u64>, // 缓存时间戳，如果不是缓存则为None
 }
 
 #[derive(Serialize, Deserialize)]
@@ -55,19 +80,16 @@ impl IpApiHandler {
         Path(ip): Path<String>,
         axum::extract::State(state): axum::extract::State<Arc<Self>>,
     ) -> impl IntoResponse {
+        // 获取当前时间戳
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+            
         // 首先尝试从缓存获取
         if let Some(cached_info) = state.cache.get(&ip).await {
             info!("从缓存获取IP信息: {}", ip);
-            let response = IpResponse {
-                ip: cached_info.ip,
-                ip_range: cached_info.ip_range,
-                country: cached_info.country,
-                city: cached_info.city,
-                asn: cached_info.asn,
-                organization: cached_info.organization,
-                cached: Some(true),
-            };
-            
+            let response = Self::create_response_from_ip_info(&cached_info, Some(now));
             return (StatusCode::OK, Json(response)).into_response();
         }
         
@@ -75,21 +97,25 @@ impl IpApiHandler {
         let reader = state.reader.read().await;
         
         match reader.lookup(&ip) {
-            Ok(info) => {
+            Ok(mut info) => {
+                // 如果没有WHOIS信息，尝试获取
+                if info.whois_info.is_none() {
+                    match WhoisClient::lookup(&ip) {
+                        Ok(whois_info) => {
+                            info.whois_info = Some(whois_info);
+                        }
+                        Err(e) => {
+                            warn!("获取WHOIS信息失败 {}: {}", ip, e);
+                        }
+                    }
+                }
+                
                 // 构建响应
-                let response = IpResponse {
-                    ip: info.ip.clone(),
-                    ip_range: info.ip_range.clone(),
-                    country: info.country.clone(),
-                    city: info.city.clone(),
-                    asn: info.asn.clone(),
-                    organization: info.organization.clone(),
-                    cached: Some(false),
-                };
+                let response = Self::create_response_from_ip_info(&info, None);
                 
                 // 将结果存入缓存
                 if let Err(e) = state.cache.set(&ip, info).await {
-                    tracing::warn!("无法缓存IP信息 {}: {}", ip, e);
+                    warn!("无法缓存IP信息 {}: {}", ip, e);
                 }
                 
                 (StatusCode::OK, Json(response)).into_response()
@@ -102,6 +128,37 @@ impl IpApiHandler {
                 
                 (StatusCode::BAD_REQUEST, Json(response)).into_response()
             }
+        }
+    }
+    
+    fn create_response_from_ip_info(info: &crate::maxmind::reader::IpInfo, cached_timestamp: Option<u64>) -> IpResponse {
+        let ip_info = IpInfo {
+            ip: info.ip.clone(),
+            ip_range: info.ip_range.clone(),
+            country: info.country.clone(),
+            city: info.city.clone(),
+            asn: info.asn,
+            organization: info.organization.clone(),
+        };
+        
+        let mut whois_info = None;
+        
+        // 添加WHOIS信息（如果有）
+        if let Some(whois) = &info.whois_info {
+            whois_info = Some(WhoisInfoResponse {
+                netname: whois.netname.clone(),
+                descr: whois.descr.clone(),
+                country: whois.country.clone(),
+                org: whois.org.clone(),
+                admin: whois.admin_c.clone(),
+                maintainer: whois.mnt_by.clone(),
+            });
+        }
+        
+        IpResponse {
+            info: ip_info,
+            whois_info,
+            cached: cached_timestamp,
         }
     }
     
