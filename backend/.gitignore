@@ -21,4 +21,10 @@ Thumbs.db
 .env
 
 # Cargo相关
-Cargo.lock 
+Cargo.lock
+
+# 配置文件
+config.yaml
+
+# MaxMind数据库文件
+/data/mmdb/*.mmdb 
