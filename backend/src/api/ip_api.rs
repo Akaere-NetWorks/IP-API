@@ -2,6 +2,8 @@ use crate::maxmind::reader::MaxmindReader;
 use crate::utils::ip_cache::IpCache;
 use crate::utils::whois_client::WhoisClient;
 use crate::utils::bgptools_client::{BgpToolsClient, BgpToolsUpstream};
+use crate::utils::rpki_client::{RpkiClient, RpkiValidity};
+use crate::utils::bgp_api_client::BgpApiClient;
 use axum::{
     extract::Path,
     http::StatusCode,
@@ -12,7 +14,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{info, warn};
+use tracing::{info, warn, debug};
 
 #[derive(Serialize, Deserialize)]
 pub struct IpInfo {
@@ -69,6 +71,8 @@ pub struct IpResponse {
     pub whois_info: Option<WhoisInfoResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bgp_info: Option<BgpInfoResponse>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rpki_info_list: Vec<RpkiValidity>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cached: Option<u64>, // 缓存时间戳，如果不是缓存则为None
 }
@@ -142,6 +146,42 @@ impl IpApiHandler {
                     }
                 }
                 
+                // 如果没有BGP API信息，尝试获取
+                if info.bgp_api_info.is_none() {
+                    match BgpApiClient::query(&ip).await {
+                        Ok(bgp_result) => {
+                            info.bgp_api_info = Some(bgp_result.clone());
+                            if let Some(meta) = info.bgp_api_info.as_ref().unwrap().meta.iter().find(|m| m.origin_asns.is_some()) {
+                                if let (Some(prefix), Some(asns)) = (Some(&info.bgp_api_info.as_ref().unwrap().prefix), &meta.origin_asns) {
+                                    // 在执行 RPKI 查询前记录要查询的前缀和 ASN 列表
+                                    info!("准备执行 RPKI 查询, prefix={}, originASNs={:?}", prefix, asns);
+                                    let mut rpki_info_list = Vec::new();
+                                    for asn in asns {
+                                        // 打印每个 ASN 的 RPKI 请求
+                                        info!("发送 RPKI 请求: prefix={}, asn={}", prefix, asn);
+                                        let rpki_client = RpkiClient::new("http://rpki.akae.re");
+                                        match rpki_client.query(prefix, asn).await {
+                                            Ok(validity) => {
+                                                rpki_info_list.push(validity);
+                                            }
+                                            Err(e) => {
+                                                warn!("RPKI 查询失败 {}: {}", asn, e);
+                                            }
+                                        }
+                                    }
+                                    // 将 RPKI 查询结果填充到响应信息中
+                                    info.rpki_info_list = rpki_info_list;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("获取BGP API信息失败 {}: {}", ip, e);
+                            // 在BGP API调用失败时记录详细调试信息
+                            debug!("获取BGP API信息失败详情 {}: {:?}", ip, e);
+                        }
+                    }
+                }
+                
                 // 构建响应
                 let response = Self::create_response_from_ip_info(&info, None);
                 
@@ -205,6 +245,7 @@ impl IpApiHandler {
             info: ip_info,
             whois_info,
             bgp_info,
+            rpki_info_list: info.rpki_info_list.clone(),
             cached: cached_timestamp,
         }
     }

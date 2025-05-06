@@ -170,7 +170,7 @@ impl BgpToolsClient {
     /// 从BGP Tools网站获取上游信息
     async fn fetch_upstreams(prefix: &str) -> Result<Vec<BgpToolsUpstream>, String> {
         let url = format!("{}/prefix/{}", BGPTOOLS_WEBSITE, prefix);
-        debug!("BGP Tools fetch_upstreams 请求URL: {}", url);
+        info!("BGP Tools fetch_upstreams 请求URL: {}", url);
 
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
@@ -189,8 +189,8 @@ impl BgpToolsClient {
 
         let document = Html::parse_document(&html);
 
-        // 选择Upstreams的div
-        let div_selector = Selector::parse("div.column-half").unwrap();
+        // 选择Upstreams所在的上游区域 div
+        let div_selector = Selector::parse("div.grid-row > div.column-half").unwrap();
         let h2_selector = Selector::parse("h2.heading-medium").unwrap();
         let ul_selector = Selector::parse("ul").unwrap();
         let li_selector = Selector::parse("li").unwrap();
