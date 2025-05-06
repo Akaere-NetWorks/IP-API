@@ -1,0 +1,24 @@
+# Rust编译输出目录
+/target/
+
+# 编译时生成的依赖文件
+**/*.rs.bk
+**/*.d
+
+# 日志文件
+*.log
+
+# 临时文件
+*.tmp
+*.swp
+*.bak
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 环境变量文件
+.env
+
+# Cargo相关
+Cargo.lock 
