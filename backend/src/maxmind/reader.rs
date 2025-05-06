@@ -69,9 +69,12 @@ impl MaxmindReader {
         if let Some(reader) = &self.asn_reader {
             match reader.lookup::<geoip2::Asn>(ip) {
                 Ok(asn_data) => {
-                    let asn = asn_data.unwrap();
-                    info.asn = asn.autonomous_system_number;
-                    info.organization = asn.autonomous_system_organization.map(|s| s.to_string());
+                    if let Some(asn) = asn_data {
+                        info.asn = asn.autonomous_system_number;
+                        info.organization = asn.autonomous_system_organization.map(|s| s.to_string());
+                    } else {
+                        info!("ASN数据库未找到该IP的ASN信息: {}", ip);
+                    }
                 },
                 Err(e) => {
                     error!("ASN查询错误: {}", e);

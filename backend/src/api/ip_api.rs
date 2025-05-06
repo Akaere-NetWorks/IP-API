@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 #[derive(Serialize, Deserialize)]
 pub struct IpResponse {
-    pub status: String,
     pub ip: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip_range: Option<String>,
@@ -55,7 +54,6 @@ impl IpApiHandler {
         match reader.lookup(&ip) {
             Ok(info) => {
                 let response = IpResponse {
-                    status: "success".to_string(),
                     ip: info.ip,
                     ip_range: info.ip_range,
                     country: info.country,

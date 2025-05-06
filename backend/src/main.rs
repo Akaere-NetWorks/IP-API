@@ -10,6 +10,14 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use std::net::SocketAddr;
+use std::path::Path;
+
+fn all_mmdb_exists(dir: &str) -> bool {
+    let asn = Path::new(dir).join("GeoLite2-Asn.mmdb");
+    let city = Path::new(dir).join("GeoLite2-City.mmdb");
+    let country = Path::new(dir).join("GeoLite2-Country.mmdb");
+    asn.exists() && city.exists() && country.exists()
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -31,9 +39,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let reader = MaxmindReader::new(maxmind_config.clone());
     let reader_arc = Arc::new(RwLock::new(reader));
     
-    // 执行初始数据库更新
-    tracing::info!("初始化MaxMind数据库...");
-    updater.update().await.map_err(|e| format!("MaxMind数据库初始化失败: {}", e))?;
+    // 启动时如果本地已存在所有mmdb数据库文件，则跳过首次下载
+    if all_mmdb_exists(&config.maxmind.database_dir) {
+        tracing::info!("检测到本地已存在所有mmdb数据库文件，跳过首次下载");
+    } else {
+        tracing::info!("首次启动，开始下载MaxMind数据库...");
+        updater.update().await.map_err(|e| format!("MaxMind数据库初始化失败: {}", e))?;
+    }
     
     // 加载数据库
     {
