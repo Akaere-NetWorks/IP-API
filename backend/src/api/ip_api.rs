@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{info, warn, debug};
+use futures::future::join_all;
 
 #[derive(Serialize, Deserialize)]
 pub struct IpInfo {
@@ -122,62 +123,100 @@ impl IpApiHandler {
         
         match reader.lookup(&ip) {
             Ok(mut info) => {
-                // 如果没有WHOIS信息，尝试获取
-                if info.whois_info.is_none() {
-                    match WhoisClient::lookup(&ip) {
-                        Ok(whois_info) => {
-                            info.whois_info = Some(whois_info);
-                        }
-                        Err(e) => {
-                            warn!("获取WHOIS信息失败 {}: {}", ip, e);
-                        }
-                    }
-                }
-                
-                // 如果没有BGP Tools信息，尝试获取
-                if info.bgp_info.is_none() {
-                    match BgpToolsClient::lookup(&ip).await {
-                        Ok(bgp_info) => {
-                            info.bgp_info = Some(bgp_info);
-                        }
-                        Err(e) => {
-                            warn!("获取BGP Tools信息失败 {}: {}", ip, e);
-                        }
-                    }
-                }
-                
-                // 如果没有BGP API信息，尝试获取
-                if info.bgp_api_info.is_none() {
-                    match BgpApiClient::query(&ip).await {
-                        Ok(bgp_result) => {
-                            info.bgp_api_info = Some(bgp_result.clone());
-                            if let Some(meta) = info.bgp_api_info.as_ref().unwrap().meta.iter().find(|m| m.origin_asns.is_some()) {
-                                if let (Some(prefix), Some(asns)) = (Some(&info.bgp_api_info.as_ref().unwrap().prefix), &meta.origin_asns) {
-                                    // 在执行 RPKI 查询前记录要查询的前缀和 ASN 列表
-                                    info!("准备执行 RPKI 查询, prefix={}, originASNs={:?}", prefix, asns);
-                                    let mut rpki_info_list = Vec::new();
-                                    for asn in asns {
-                                        // 打印每个 ASN 的 RPKI 请求
-                                        info!("发送 RPKI 请求: prefix={}, asn={}", prefix, asn);
-                                        let rpki_client = RpkiClient::new("http://rpki.akae.re");
-                                        match rpki_client.query(prefix, asn).await {
-                                            Ok(validity) => {
-                                                rpki_info_list.push(validity);
-                                            }
-                                            Err(e) => {
-                                                warn!("RPKI 查询失败 {}: {}", asn, e);
-                                            }
-                                        }
-                                    }
-                                    // 将 RPKI 查询结果填充到响应信息中
-                                    info.rpki_info_list = rpki_info_list;
-                                }
+                // 并发请求所有后端信息
+                let ip_cloned = ip.clone();
+                let whois_future = async {
+                    if info.whois_info.is_none() {
+                        match WhoisClient::lookup(&ip_cloned) {
+                            Ok(whois_info) => Some(whois_info),
+                            Err(e) => {
+                                warn!("获取WHOIS信息失败 {}: {}", ip_cloned, e);
+                                None
                             }
                         }
-                        Err(e) => {
-                            warn!("获取BGP API信息失败 {}: {}", ip, e);
-                            // 在BGP API调用失败时记录详细调试信息
-                            debug!("获取BGP API信息失败详情 {}: {:?}", ip, e);
+                    } else {
+                        None
+                    }
+                };
+                
+                let bgp_tools_future = async {
+                    if info.bgp_info.is_none() {
+                        match BgpToolsClient::lookup(&ip_cloned).await {
+                            Ok(bgp_info) => Some(bgp_info),
+                            Err(e) => {
+                                warn!("获取BGP Tools信息失败 {}: {}", ip_cloned, e);
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                };
+                
+                let bgp_api_future = async {
+                    if info.bgp_api_info.is_none() {
+                        match BgpApiClient::query(&ip_cloned).await {
+                            Ok(bgp_result) => Some(bgp_result),
+                            Err(e) => {
+                                warn!("获取BGP API信息失败 {}: {}", ip_cloned, e);
+                                debug!("获取BGP API信息失败详情 {}: {:?}", ip_cloned, e);
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                };
+                
+                // 并发执行所有请求
+                let (whois_result, bgp_tools_result, bgp_api_result) = tokio::join!(
+                    whois_future,
+                    bgp_tools_future,
+                    bgp_api_future
+                );
+                
+                // 处理查询结果
+                if let Some(whois_info) = whois_result {
+                    info.whois_info = Some(whois_info);
+                }
+                
+                if let Some(bgp_info) = bgp_tools_result {
+                    info.bgp_info = Some(bgp_info);
+                }
+                
+                if let Some(bgp_result) = bgp_api_result {
+                    info.bgp_api_info = Some(bgp_result.clone());
+                    
+                    // 处理RPKI查询
+                    if let Some(meta) = info.bgp_api_info.as_ref().unwrap().meta.iter().find(|m| m.origin_asns.is_some()) {
+                        if let (Some(prefix), Some(asns)) = (Some(&info.bgp_api_info.as_ref().unwrap().prefix), &meta.origin_asns) {
+                            info!("准备执行RPKI查询, prefix={}, ASNs={:?}", prefix, asns);
+                            
+                            // 并发查询所有ASN的RPKI信息
+                            let rpki_futures = asns.iter().map(|asn| {
+                                let prefix = prefix.clone();
+                                let asn = asn.clone();
+                                async move {
+                                    let rpki_client = RpkiClient::new("http://rpki.akae.re");
+                                    info!("发送RPKI请求: prefix={}, asn={}", prefix, asn);
+                                    match rpki_client.query(&prefix, &asn).await {
+                                        Ok(validity) => Some(validity),
+                                        Err(e) => {
+                                            warn!("RPKI查询失败 {}: {}", asn, e);
+                                            None
+                                        }
+                                    }
+                                }
+                            }).collect::<Vec<_>>();
+                            
+                            // 等待所有RPKI查询完成
+                            let rpki_results = join_all(rpki_futures).await;
+                            
+                            // 收集有效的RPKI结果
+                            info.rpki_info_list = rpki_results
+                                .into_iter()
+                                .filter_map(|r| r)
+                                .collect();
                         }
                     }
                 }

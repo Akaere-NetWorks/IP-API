@@ -12,7 +12,7 @@ use std::hash::Hash;
 
 const MAX_MEMORY_BYTES: usize = 1024 * 1024 * 1024; // 1024MB
 const PERSIST_INTERVAL: Duration = Duration::from_secs(60 * 10); // 10分钟
-const EXPIRY_DURATION: Duration = Duration::from_secs(60 * 60 * 24); // 24小时
+const EXPIRY_DURATION: Duration = Duration::from_secs(60 * 60 * 24 * 7); // 7天（1周）
 
 type SharedStore<K, V> = Arc<RwLock<KvStore<K, V>>>;
 
