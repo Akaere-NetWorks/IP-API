@@ -27,6 +27,31 @@ pub struct IpInfo {
     pub whois_info: Option<WhoisInfo>,
 }
 
+fn is_reserved_ip(ip: &str) -> bool {
+    use std::net::IpAddr;
+    if let Ok(addr) = ip.parse::<IpAddr>() {
+        match addr {
+            IpAddr::V4(v4) => {
+                v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_broadcast()
+                    || v4.is_documentation()
+                    || v4.octets()[0] == 0 // 0.0.0.0/8
+            }
+            IpAddr::V6(v6) => {
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_unique_local()
+                    || v6.is_multicast()
+                    || v6.is_unicast_link_local()
+            }
+        }
+    } else {
+        false
+    }
+}
+
 impl MaxmindReader {
     pub fn new(config: Arc<MaxmindConfig>) -> Self {
         Self {
@@ -47,19 +72,28 @@ impl MaxmindReader {
     }
 
     pub fn lookup(&self, ip_str: &str) -> Result<IpInfo, String> {
+        if is_reserved_ip(ip_str) {
+            return Ok(IpInfo {
+                ip: ip_str.to_string(),
+                ip_range: None,
+                country: Some("保留地址".to_string()),
+                city: None,
+                asn: None,
+                organization: Some("保留地址".to_string()),
+                whois_info: None,
+            });
+        }
         let ip_info = if ip_str.contains('/') {
             self.lookup_cidr(ip_str)?
         } else {
             self.lookup_ip(ip_str)?
         };
-        
         Ok(ip_info)
     }
 
     fn lookup_ip(&self, ip_str: &str) -> Result<IpInfo, String> {
         let ip = IpAddr::from_str(ip_str)
             .map_err(|e| format!("无效的IP地址: {}", e))?;
-        
         let mut info = IpInfo {
             ip: ip_str.to_string(),
             ip_range: None,
@@ -69,27 +103,23 @@ impl MaxmindReader {
             organization: None,
             whois_info: None,
         };
-        
         if let Some(reader) = &self.asn_reader {
             match reader.lookup::<geoip2::Asn>(ip) {
-                Ok(asn_data) => {
-                    if let Some(asn) = asn_data {
-                        info.asn = asn.autonomous_system_number;
-                        info.organization = asn.autonomous_system_organization.map(|s| s.to_string());
-                    } else {
-                        info!("ASN数据库未找到该IP的ASN信息: {}", ip);
-                    }
+                Ok(Some(asn)) => {
+                    info.asn = asn.autonomous_system_number;
+                    info.organization = asn.autonomous_system_organization.map(|s| s.to_string());
+                },
+                Ok(None) => {
+                    info!("ASN数据库未找到该IP的ASN信息: {}", ip);
                 },
                 Err(e) => {
                     error!("ASN查询错误: {}", e);
                 }
             }
         }
-        
         if let Some(reader) = &self.city_reader {
             match reader.lookup::<geoip2::City>(ip) {
-                Ok(city_data) => {
-                    let city_record = city_data.unwrap();
+                Ok(Some(city_record)) => {
                     if let Some(city) = city_record.city {
                         if let Some(names) = city.names {
                             info.city = names.get("zh-CN")
@@ -97,7 +127,6 @@ impl MaxmindReader {
                                 .map(|s| s.to_string());
                         }
                     }
-                    
                     if info.country.is_none() {
                         if let Some(country) = city_record.country {
                             if let Some(names) = country.names {
@@ -108,17 +137,16 @@ impl MaxmindReader {
                         }
                     }
                 },
+                Ok(None) => {},
                 Err(e) => {
                     error!("城市查询错误: {}", e);
                 }
             }
         }
-        
         if info.country.is_none() {
             if let Some(reader) = &self.country_reader {
                 match reader.lookup::<geoip2::Country>(ip) {
-                    Ok(country_data) => {
-                        let country_record = country_data.unwrap();
+                    Ok(Some(country_record)) => {
                         if let Some(country) = country_record.country {
                             if let Some(names) = country.names {
                                 info.country = names.get("zh-CN")
@@ -127,27 +155,24 @@ impl MaxmindReader {
                             }
                         }
                     },
+                    Ok(None) => {},
                     Err(e) => {
                         error!("国家查询错误: {}", e);
                     }
                 }
             }
         }
-        
         Ok(info)
     }
     
     fn lookup_cidr(&self, cidr_str: &str) -> Result<IpInfo, String> {
         let network = IpNet::from_str(cidr_str)
             .map_err(|e| format!("无效的CIDR: {}", e))?;
-            
         let ip = network.addr();
         let ip_str = ip.to_string();
-        
         let mut info = self.lookup_ip(&ip_str)?;
         info.ip = cidr_str.to_string();
         info.ip_range = Some(format!("{} - {}", network.network(), network.broadcast()));
-        
         Ok(info)
     }
 
