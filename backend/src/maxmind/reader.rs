@@ -8,6 +8,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use serde::{Serialize, Deserialize};
 use crate::utils::whois_client::WhoisInfo;
+use crate::utils::bgptools_client::BgpToolsInfo;
 
 pub struct MaxmindReader {
     config: Arc<MaxmindConfig>,
@@ -25,6 +26,7 @@ pub struct IpInfo {
     pub asn: Option<u32>,
     pub organization: Option<String>,
     pub whois_info: Option<WhoisInfo>,
+    pub bgp_info: Option<BgpToolsInfo>,
 }
 
 fn is_reserved_ip(ip: &str) -> bool {
@@ -81,6 +83,7 @@ impl MaxmindReader {
                 asn: None,
                 organization: Some("保留地址".to_string()),
                 whois_info: None,
+                bgp_info: None,
             });
         }
         let ip_info = if ip_str.contains('/') {
@@ -102,6 +105,7 @@ impl MaxmindReader {
             asn: None,
             organization: None,
             whois_info: None,
+            bgp_info: None,
         };
         if let Some(reader) = &self.asn_reader {
             match reader.lookup::<geoip2::Asn>(ip) {

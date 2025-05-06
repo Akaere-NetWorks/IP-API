@@ -1,6 +1,7 @@
 use crate::maxmind::reader::MaxmindReader;
 use crate::utils::ip_cache::IpCache;
 use crate::utils::whois_client::WhoisClient;
+use crate::utils::bgptools_client::{BgpToolsClient, BgpToolsUpstream};
 use axum::{
     extract::Path,
     http::StatusCode,
@@ -45,10 +46,29 @@ pub struct WhoisInfoResponse {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct BgpInfoResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asn: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registry: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allocated: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub as_name: Option<String>,
+    pub upstreams: Vec<BgpToolsUpstream>,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct IpResponse {
     pub info: IpInfo,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub whois_info: Option<WhoisInfoResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bgp_info: Option<BgpInfoResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cached: Option<u64>, // 缓存时间戳，如果不是缓存则为None
 }
@@ -110,6 +130,18 @@ impl IpApiHandler {
                     }
                 }
                 
+                // 如果没有BGP Tools信息，尝试获取
+                if info.bgp_info.is_none() {
+                    match BgpToolsClient::lookup(&ip).await {
+                        Ok(bgp_info) => {
+                            info.bgp_info = Some(bgp_info);
+                        }
+                        Err(e) => {
+                            warn!("获取BGP Tools信息失败 {}: {}", ip, e);
+                        }
+                    }
+                }
+                
                 // 构建响应
                 let response = Self::create_response_from_ip_info(&info, None);
                 
@@ -142,6 +174,7 @@ impl IpApiHandler {
         };
         
         let mut whois_info = None;
+        let mut bgp_info = None;
         
         // 添加WHOIS信息（如果有）
         if let Some(whois) = &info.whois_info {
@@ -155,9 +188,23 @@ impl IpApiHandler {
             });
         }
         
+        // 添加BGP Tools信息（如果有）
+        if let Some(bgp) = &info.bgp_info {
+            bgp_info = Some(BgpInfoResponse {
+                asn: bgp.asn.clone(),
+                prefix: bgp.prefix.clone(),
+                country: bgp.country.clone(),
+                registry: bgp.registry.clone(),
+                allocated: bgp.allocated.clone(),
+                as_name: bgp.as_name.clone(),
+                upstreams: bgp.upstreams.clone(),
+            });
+        }
+        
         IpResponse {
             info: ip_info,
             whois_info,
+            bgp_info,
             cached: cached_timestamp,
         }
     }
