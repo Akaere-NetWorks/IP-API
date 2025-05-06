@@ -6,6 +6,7 @@ use std::net::IpAddr;
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
+use serde::{Serialize, Deserialize};
 
 pub struct MaxmindReader {
     config: Arc<MaxmindConfig>,
@@ -14,7 +15,7 @@ pub struct MaxmindReader {
     country_reader: Option<Reader<Vec<u8>>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpInfo {
     pub ip: String,
     pub ip_range: Option<String>,

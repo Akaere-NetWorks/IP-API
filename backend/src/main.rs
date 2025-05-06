@@ -2,10 +2,12 @@ mod api;
 mod config;
 mod maxmind;
 mod scheduler;
+mod utils;
 
 use api::{create_router, IpApiHandler};
 use maxmind::{MaxmindReader, MaxmindUpdater};
 use scheduler::Scheduler;
+use utils::ip_cache::IpCache;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -38,6 +40,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 创建MaxMind数据库读取器
     let reader = MaxmindReader::new(maxmind_config.clone());
     let reader_arc = Arc::new(RwLock::new(reader));
+    
+    // 创建IP缓存
+    let cache_path = Path::new("data").join("ip_cache.bin");
+    let ip_cache = IpCache::new(cache_path);
+    let ip_cache_arc = Arc::new(ip_cache);
+    
+    // 启动IP缓存后台任务（数据加载、定期持久化、过期清理）
+    ip_cache_arc.start_tasks().await;
+    tracing::info!("IP缓存系统已初始化");
     
     // 启动时如果本地已存在所有mmdb数据库文件，则跳过首次下载
     if all_mmdb_exists(&config.maxmind.database_dir) {
@@ -82,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     scheduler.start().await;
     
     // 创建HTTP路由
-    let ip_handler = IpApiHandler::new(reader_arc.clone());
+    let ip_handler = IpApiHandler::new(reader_arc.clone(), ip_cache_arc.clone());
     let app = create_router(ip_handler);
     
     // 启动HTTP服务器

@@ -28,3 +28,4 @@ config.yaml
 
 # MaxMind数据库文件
 /data/mmdb/*.mmdb 
+/data/ip_cache.bin
